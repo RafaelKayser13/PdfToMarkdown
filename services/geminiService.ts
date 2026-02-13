@@ -1,24 +1,30 @@
 
 import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
 
-export async function convertPageToMarkdown(base64Image: string): Promise<string> {
+const MAX_RETRIES = 5;
+const INITIAL_BACKOFF_MS = 3000;
+
+async function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+export async function convertPageToMarkdown(base64Image: string, retryCount = 0): Promise<string> {
+  // Sempre inicializamos uma nova instância para garantir o uso da chave mais recente se necessário
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
   
   const prompt = `
-    Analyze this PDF page image and convert it into high-quality Markdown text. 
-    Follow these rules strictly:
-    1. PRECISION: Maintain the exact logical flow of the text. Identify multi-column layouts and read them in the correct order (usually top-to-bottom of the first column, then the second).
-    2. TABLES: Identify tables and reconstruct them using standard Markdown table syntax. Ensure cell contents are preserved and properly aligned. Do not scramble table rows.
-    3. IMAGES: Completely ignore all images, logos, and decorative graphics. Only focus on text and data.
-    4. HEADINGS: Use appropriate Markdown headers (# ## ###) based on visual hierarchy.
-    5. LISTS: Preserve bulleted or numbered lists.
-    6. VERTICAL TEXT: If text is oriented vertically, transcribe it as regular text in its logical position in the flow.
-    7. CLEANLINESS: Do not add any conversational text or metadata about the conversion. Just output the Markdown content of the page.
+    Converta esta imagem de página de PDF em Markdown de alta qualidade.
+    REGRAS:
+    1. Preserve a ordem lógica de leitura (especialmente em colunas).
+    2. Reconstrua tabelas fielmente usando sintaxe Markdown.
+    3. Ignore imagens e logotipos decorativos.
+    4. Use cabeçalhos (#, ##) baseados na hierarquia visual.
+    5. Retorne APENAS o Markdown, sem comentários ou explicações.
   `;
 
   try {
     const response: GenerateContentResponse = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview', // Flash is excellent for high-speed OCR tasks
+      model: 'gemini-3-flash-preview', // Modelo otimizado para velocidade e eficiência de cota
       contents: {
         parts: [
           { inlineData: { mimeType: 'image/jpeg', data: base64Image } },
@@ -26,14 +32,31 @@ export async function convertPageToMarkdown(base64Image: string): Promise<string
         ]
       },
       config: {
-        temperature: 0.1, // Low temperature for higher factual precision
+        temperature: 0.1,
         thinkingConfig: { thinkingBudget: 0 } 
       }
     });
 
-    return response.text || '';
-  } catch (error) {
-    console.error('Error in Gemini conversion:', error);
-    throw new Error('Failed to convert page using AI');
+    if (!response.text) {
+      throw new Error("Resposta vazia da IA");
+    }
+
+    return response.text;
+  } catch (error: any) {
+    const errorMsg = error?.message || "";
+    const isQuotaError = errorMsg.includes('429') || errorMsg.includes('RESOURCE_EXHAUSTED');
+    const isTransient = isQuotaError || errorMsg.includes('503') || errorMsg.includes('500');
+
+    if (isTransient && retryCount < MAX_RETRIES) {
+      // Backoff exponencial: 3s, 6s, 12s, 24s...
+      const waitTime = INITIAL_BACKOFF_MS * Math.pow(2, retryCount);
+      console.warn(`[Cota] Limite atingido. Aguardando ${waitTime}ms para liberar gratuidade...`);
+      await sleep(waitTime);
+      return convertPageToMarkdown(base64Image, retryCount + 1);
+    }
+
+    throw new Error(isQuotaError 
+      ? "O servidor de IA está muito ocupado. Tente novamente em alguns segundos ou reduza o tamanho do PDF." 
+      : "Falha na conversão da página.");
   }
 }
