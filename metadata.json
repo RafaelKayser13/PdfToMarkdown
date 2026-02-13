@@ -1,0 +1,5 @@
+{
+  "name": "Precision PDF to Markdown Converter",
+  "description": "An AI-powered PDF converter that handles complex layouts, multi-column text, and tables with extreme precision using Gemini vision models.",
+  "requestFramePermissions": []
+}
